@@ -1,0 +1,27 @@
+import pandas as pd
+import pyodbc
+
+#To Make SQL connection with ODBC and Windows Authentication
+myConn1 = pyodbc.connect( driver="{SQL Server}",server="eterpt-dev",database="ETE_Reporting",user=";",password=";" )
+myConn2 = pyodbc.connect( driver="{SQL Server}",server="eterpt-test",database="ETE_Reporting",user=";",password=";")
+
+cur1=myConn1.cursor()
+print('Cursor established')
+db_cmd = '''SELECT top 10 [ServiceCategory],[Service],[SubService],[ServiceType],[Network],[ZoneStatus],[DC],[SLDC],[UoM],[LowWater],[HighWater] ,[MaxUoM],[Latest]
+      ,[Submitter] ,[SubmittedTime]   FROM [ETE_Reporting].[cap].[Supply] Where Latest=1
+      '''
+res = cur1.execute(db_cmd)
+cur2=myConn2.cursor()
+
+db_cmd2 =''' Insert into ETE_Reporting.cap.Supply([ServiceCategory],[Service],[SubService],[ServiceType],[Network],[ZoneStatus],[DC],[SLDC],[UoM],[LowWater],[HighWater] ,[MaxUoM],[Latest]
+      ,[Submitter] ,[SubmittedTime]) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)'''
+#print (res)
+for r in res:
+    Values=[r.ServiceCategory,r.Service,r.SubService,r.ServiceType,r.Network,r.ZoneStatus,r.DC,r.SLDC,r.UoM,r.LowWater,r.HighWater,r.MaxUoM,r.Latest,r.Submitter,r.SubmittedTime]
+    cur2.execute(db_cmd2,Values)
+
+cur1.commit()
+cur1.close()
+cur2.commit()
+cur2.close()
+print("done")
