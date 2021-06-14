@@ -1,0 +1,103 @@
+import pyodbc
+import pandas as pd
+
+SDB_Conn= pyodbc.connect('Driver={SQL Server Native Client 11.0}; Server=eterpt-prod.ms.ds.uhc.com; Database=ETE_Reporting; Trusted_Connection=yes; User ID=auth_windows;')
+cur1 = SDB_Conn.cursor()
+
+date_OffSet=2
+HPD_Query= '''SELECT DISTINCT SR.Service ,SR.SubService ,SR.L2Name ,SR.L1Name ,SR.L3Name ,SR.DC ,SR.Network
+,CONVERT(NVARCHAR(50),'CPU_Utilization') AS Component
+,CASE 
+    WHEN SR.SDLC  IN ('EZ-DEV', 'EZ-TST') THEN 'EZ-NPRD' 
+	ELSE SR.SDLC END AS SDLC
+,cast((HPD.Peak99_CPU/100) as Float) AS Measure
+,((SR.CPUThres-(HPD.Peak99_CPU/100)) * SR.L2Memory) SupplyValue
+,CAST(HPD.PullDate AS DATE) PullDate
+FROM cap.SupplyReference SR WITH (NOLOCK,NOWAIT)
+INNER JOIN cap.HPReportData HPD WITH (NOLOCK,NOWAIT) ON SR.L2Name = HPD.ServerShort
+INNER JOIN cap.ITM_Data IR WITH (NOLOCK,NOWAIT) ON SR.L2Name = IR.SERVERNAME
+WHERE SR.Service = 'TWSD' 
+AND HPD.PullDate = ''' +'CONVERT(date, Getdate()-{}'.format(date_OffSet)+')AND IR.PULLDATE  = CONVERT(date, Getdate()-{}'.format(date_OffSet)+')'
+HPD_df= pd.read_sql_query(HPD_Query,SDB_Conn)
+
+ITM_Query='''SELECT DISTINCT SR.Service ,SR.SubService ,SR.L2Name ,SR.L1Name ,SR.L3Name ,SR.DC ,SR.Network
+ ,CONVERT(NVARCHAR(50),'Memory_Utilization') AS Component
+ ,CASE 
+    WHEN SR.SDLC  IN ('EZ-DEV', 'EZ-TST') THEN 'EZ-NPRD' 
+	ELSE SR.SDLC END AS SDLC
+ ,cast((IR.PCT_USED/100) as float) Measure
+
+ ,((SR.MemThres - (CAST(IR.PCT_USED AS DECIMAL)/100))*SR.L2Memory) as SupplyValue
+ ,CAST(IR.PULLDATE AS DATE) PullDate
+ FROM cap.ITM_Data IR
+ JOIN [cap].[SupplyReference] SR ON SR.L2Name = IR.SERVERNAME
+ JOIN cap.HPReportData HPD ON HPD.ServerShort = IR.SERVERNAME
+ WHERE SR.Service = 'TWSD'
+AND IR.PULLDATE =''' +'CONVERT(date, Getdate()-{}'.format(date_OffSet)+') AND HPD.PullDate  = CONVERT(date, Getdate()-{}'.format(date_OffSet)+')'
+
+ITM_df=pd.read_sql_query(ITM_Query,SDB_Conn)
+
+Union_df=HPD_df.append(ITM_df)
+
+# Delete existing data incase of rerun
+#cur1.execute('Select * from ETE_Reporting.cap.SupplyComponent Where  Service='TWSD' AND Pulldate=getdate()-{}'.format(date_OffSet)+')'
+
+Insert_SQL_CMD= 'INSERT INTO [cap].[SupplyComponent]([Service],[SubService],[L2Name],[L1Name],[L3Name],[DC],[Network],[Component],[SDLC],[Measure],[SupplyValue],[PullDate]) VALUES (?, ?, ?, ?,?, ?, ?, ?,?, ?, ?, ?)'
+
+
+cur1.fast_executemany = True
+cur1.executemany(Insert_SQL_CMD, Union_df.values.tolist())
+
+
+#print(Union_df.head(10))
+
+SDB_Conn.commit()
+Cur1.close()
+SDB_Conn.close()
+----
+# Next section
+import pyodbc
+import pandas as pd
+
+SDB_SQLConn= pyodbc.connect('Driver={SQL Server Native Client 11.0}; Server=eterpt-prod.ms.ds.uhc.com; Database=ETE_Reporting; Trusted_Connection=yes; User ID=auth_windows;')
+cur2 = SDB_SQLConn.cursor()
+
+date_OffSet=9
+
+SQL_CMD = '''  Select 'Utility Services' as ServiceCategory, b.Service, b.SubService,'Physical' as ServiceType , b.Network,sm.ZoneStatus , b.DC,  b.SDLC,Sum(b.SupplyValue) as UoM,SUM(SM.LowWater) as LowWater,0 as MaxUoM,1 as Latest,'MS\etesvc' As Submitter,Convert(date,Getdate()) as SubmittedTime from (
+
+SELECT a.Service, a.SubService, a.DC, a.Network, a.SDLC, a.L1Name, a.L2Name, a.L3Name, avg(a.SupplyValue) AS SupplyValue from (
+  SELECT   sc.Service  ,sc.SubService  ,sc.DC  ,sc.Network  ,sc.SDLC  ,sc.L1Name  ,sc.L2Name  ,sc.L3Name
+  ,CAST(MIN(case when sc.[SupplyValue] < 0 then 0 else sc.[SupplyValue] end) as numeric(28,8)) as 'SupplyValue'
+  ,sc.PullDate
+  FROM cap.SupplyComponent SC 
+  WHERE Service = 'TWSD' AND L3Name not like '%DNC%' AND
+  SC.PullDate  ='''+ 'CONVERT(date,getdate()-{}'.format(date_OffSet)+')'
+'''
+  GROUP BY
+   Service ,SubService,DC ,Network ,SDLC ,L1Name ,L2Name ,L3Name, PullDate
+
+   ) a 
+   GROUP BY a.Service, a.SubService, a.DC, a.Network, a.SDLC, a.L1Name, a.L2Name, a.L3Name 
+   
+  ) b inner join cap.SupplyMatrix SM on b.Service=sm.Service AND b.SubService = sm.SubService AND b.DC=SM.DC AND  b.Network=SM.Network  AND b.SDLC=SM.SDLC
+
+  Group by b.Service, b.SubService , b.Network,sm.ZoneStatus , b.DC,  b.SDLC'''
+
+supply_df=pd.read_sql_query(SQL_CMD,SDB_SQLConn)
+
+Insert_Supply_CMD= 'INSERT INTO [cap].[Supply]([ServiceCategory],[Service],[SubService],[ServiceType],[Network],[ZoneStatus],[DC],[SDLC],[UoM],[LowWater],[MaxUoM],[Latest],[Submitter],[SubmittedTime]) VALUES (?, ?, ?, ?,?, ?, ?, ?,?, ?, ?, ?, ?, ?)'
+cur2.fast_execuctemany=True
+cur2.executemany(Insert_Supply_CMD,supply_dfpply_df.values.tolist())
+
+
+# To update latest values
+#UPDATE cap.Supply
+ #  SET Latest = 0 WHERE Service = 'TWSD' AND Latest = 1 AND SubmittedTime < (SELECT MAX(SubmittedTime) FROM cap.Supply WHERE Service = 'TWSD')
+    
+SDB_SQLConn.commit()
+
+SDB_SQLConn.close()
+cur2.close()
+
+
