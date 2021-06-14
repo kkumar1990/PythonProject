@@ -1,0 +1,123 @@
+import os
+import datetime
+import pyodbc
+import re
+import logging
+
+#from datetime import datetime
+try:
+    start_time = datetime.datetime.now()
+    logger = logging.getLogger(__name__)
+    logger.setLevel(logging.DEBUG)
+    # create file handler which logs even debug messages
+    fh = logging.FileHandler('C:/Users/kkumar26/Desktop/2021/Python_log/pylog.log', mode='w')
+    # create formatter and add it to the handlers
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    fh.setFormatter(formatter)
+    
+    # add the handlers to logger
+    logger.addHandler(fh)
+    
+    logger.info('Connection eastablished ......')
+    logger.info('Job Name: ETL_Failure_Alert:')
+    
+    # Directory location
+    path = "C:/Users/kkumar26/Documents/ETL_LOG" # C:\\Users\\kkumar26\\Documents\\ETL_LOG
+    os.chdir(path)
+    myConn1 = pyodbc.connect( driver="{SQL Server}",server="eterpt-prod.ms.ds.uhc.com",database="ETE_Reporting",user=";",password=";")
+    cur1=myConn1.cursor()
+    
+    cur1.execute("Delete from ETE_Reporting.dbo.ETL_PkgLog Where inserted_on>getdate()-1 ")
+    # iterate through all file
+    Count=0
+    for file in os.listdir():
+        Count=Count+1
+        t=os.path.getctime(file)
+        #print(t)
+        print(file)
+        
+        PkgName=file.split('-')[0]
+        PackageName=PkgName.rstrip(PkgName[-1])
+        PrjName=file.split('-')[-1]
+        ProjectName=PrjName[1:-4]
+        
+        modified=os.path.getmtime(file)
+        Time_stamp=datetime.datetime.fromtimestamp(modified)
+        
+        #print("Package_Name: "+PackageName)
+        #print("Project_Name: "+ProjectName)
+        #print("TimeStamp: ",datetime.datetime.fromtimestamp(modified))
+        
+        
+        
+        # Check whether file is in text format or not
+        if file.endswith(".log"):
+            file_path = f"{path}/{file}"
+            
+            with open(file_path, 'r') as findtext:
+                contents = findtext.read()
+                if (contents.find('DTSER_SUCCESS')!= -1):
+                    ExitCode=0
+                    ExitDesc='DTSER_SUCCESS'
+                else:
+                    ExitCode=1
+                    ExitDesc=contents
+                    
+                    # Parsing Start,End Time and Elapsed Time
+                    
+                New_Contents= contents.split("\t")
+                for row in New_Contents:
+                    
+                    # To Find Start Time
+                    x=re.search("Started:",row)
+                    if x==None:
+                        S_Time=''
+                    else:
+                        x_Start_Pos=x.start()
+                        x_sp= x_Start_Pos+8
+                        x_ep= x_Start_Pos+21
+                        S_Time= row[x_sp:x_ep]
+                        
+                        # To Find End Time
+                    y=re.search("Finished:",row)
+                    if y==None:
+                        E_Time=''
+                    else:
+                        y_Start_Pos=y.start()
+                        y_sp= y_Start_Pos+9
+                        y_ep= y_Start_Pos+21
+                        E_Time= row[y_sp:y_ep]
+                    # To Find Elapsed Time
+                    z=re.search("Elapsed:",row)
+                    if z==None:
+                        Elap_Time=''
+                    else:
+                        z_Start_Pos=z.start()
+                        z_sp= z_Start_Pos+9
+                        z_ep= z_Start_Pos+15
+                        Elap_Time= row[z_sp:z_ep]
+                    
+                    #print("StartTime"+S_Time)
+                    #print("EndTime"+E_Time)
+                    #print("ElapsedTime"+Elap_Time)
+                
+                db_cmd= "Insert into ETE_Reporting.dbo.ETL_PkgLog([LogFileName],[PackageName],[ProjectName],ExitCode,ExitDesc,Date_TimeStamp,StartTime,EndTime,[ElapsedTime(s)]) VALUES (?,?,?,?,?,?,?,?,?)"
+                Values=[file,PackageName,ProjectName,ExitCode,ExitDesc,Time_stamp,S_Time,E_Time,Elap_Time]
+                cur1.execute(db_cmd,Values)
+        
+        
+    end_time = datetime.datetime.now()
+    logger.info('Start Time : {}'.format(start_time))
+    logger.info('Start Time : {}'.format(end_time))
+    logger.info('Elapsed Time: {}'.format(end_time - start_time))
+    logger.info('Records entered in the database: {}'.format(Count))
+    
+    cur1.commit()
+    cur1.close()
+    myConn1.commit()
+    myConn1.close()
+
+except Exception as e:
+    looger.critical(e, exc_info=True)
+
+print('Done......')
