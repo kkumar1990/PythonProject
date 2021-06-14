@@ -1,0 +1,128 @@
+import ibm_db
+import ibm_db_dbi
+import pandas as pd
+import pyodbc
+import logging
+from datetime import datetime
+from time import time, strftime, localtime
+
+logger= logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+Start_dtTime=strftime("%Y-%m-%d %H:%M:%S", localtime())
+start_time = datetime.now()
+
+# set log file name with formatter
+try:
+    file_handler=logging.FileHandler("C:/Users/kkumar26/Desktop/2021/Python_log/ITM_DATA.log", mode='w')
+    formatter=logging.Formatter('%(asctime)s : %(levelname)s : %(name)s : %(message)s')
+    
+    file_handler.setFormatter(formatter)
+    
+    # add file handler to logger
+    
+    logger.addHandler(file_handler)
+    
+    # Query for VM stats
+    
+    query = '''SELECT DISTINCT SR.L3Name,SR.L2Name,SR.L1Name,SR.Service,SubService,SR.DC,SR.Network
+,CONVERT(NVARCHAR(50),'CPU_Utilization') AS Component
+,CASE 
+    WHEN SR.SDLC  IN ('EZ-DEV', 'EZ-TST') THEN 'EZ-NPRD' 
+	ELSE SR.SDLC END AS SDLC
+,CAST(HPD.PullDate AS DATE) PullDate
+,cast((HPD.Peak99_CPU/100) as Float) AS Measure
+,((SR.CPUThres-(HPD.Peak99_CPU/100)) * SR.L2Memory) SupplyValue
+FROM cap.SupplyReference SR WITH (NOLOCK,NOWAIT)
+INNER JOIN cap.HPReportData HPD WITH (NOLOCK,NOWAIT) ON SR.L2Name = HPD.ServerShort
+INNER JOIN cap.ITM_Data IR WITH (NOLOCK,NOWAIT) ON SR.L2Name = IR.SERVERNAME
+WHERE SR.Service = 'TWSD' 
+AND Convert(CHAR(8),HPD.PullDate ,112) = CONVERT(CHAR(8), CAST('6/7/2021' AS DATETIME), 112)
+AND Convert(CHAR(8),IR.PULLDATE ,112) = CONVERT(CHAR(8), CAST('6/7/2021' AS DATETIME), 112)
+'''
+    
+    # one way to do credentialing
+    
+    import getpass as gp 
+    uid=input('Enter uid:   ') 
+    pwd=gp.getpass('Enter password (hidden): ')
+    
+    # connect to your database
+    
+    db = (
+        "DRIVER = {IBM DB2 ODBC DRIVER - DB2COPY1};"
+        "DATABASE=WAREHOUS;"
+        "HOSTNAME=dbsp0132.uhc.com;"
+        "PORT=50095;"
+        "PROTOCAL=TCPIP;"
+        'UID='+uid+';'
+        'PWD='+pwd+';')
+    
+    ibm_db_conn = ibm_db.connect(db, "", "")
+    pconn = ibm_db_dbi.Connection(ibm_db_conn)
+    
+    # Writing message into log file
+    
+    logger.info('Connection Established....')
+    logger.info('ETLJob: Virtual_Financial_Dashboard')
+    
+    #optional if you are using the accelerator #ibm_db.exec_immediate(ibm_db_conn, "SET CURRENT QUERY ACCELERATION = ALL") 
+    
+    df = pd.read_sql(query, pconn)
+    
+    #Query for Linux Memory
+    
+    query1='''with A as(
+    SElect replace("System_Name",':KUX','') as ServerName, 
+    cast(case 
+    When Left("Timestamp",1) = 1 then '20'
+    When Left("Timestamp",1) = 0 Then '19' 
+    end||
+    Substr("Timestamp",2,2)|| '-' ||
+    Substr("Timestamp",4,2)|| '-' ||
+    Substr("Timestamp",6,2) as Date) AS PullDate,
+    cast("Virtual_Storage_Pct_Used" as numeric(31,2)) as Pct_Used, 
+    Cast("Total_Virtual_Storage_MB" as numeric(31,2)) as Total_Storage
+    from itmuser."Unix_Memory" 
+    ) Select ServerName, PullDate, avg(Pct_Used) AS Pct_Used, Total_Storage from A
+    where PullDate = Current Date
+    --where PullDate In (Select max(PullDate) from A where PullDate <(Select max(PullDate) from A))
+    group by ServerName, 
+    PullDate,Total_Storage  order by PullDate desc;'''
+
+    df1= pd.read_sql(query1, pconn)
+
+    df2= df.append(df1)
+
+    rowcount= len(df2.axes[0])
+    #To Make SQL connection with ODBC and Windows Authentication
+    sql_conn = pyodbc.connect('Driver={SQL Server Native Client 11.0}; Server=eterpt-dev.ms.ds.uhc.com; Database=ETE_Reporting; Trusted_Connection=yes; User ID=auth_windows;')
+    cur1=sql_conn.cursor()
+
+    cur1.execute("Delete from ETE_Reporting.cap.ITM_Data Where inserted_on>getdate()-1 ")
+    print("Copying data")
+
+    sql_statement = 'INSERT INTO [cap].[ITM_Data]([SERVERNAME],[PULLDATE],[PCT_USED],[TOTAL_STORAGE]) VALUES (?, ?, ?, ?)'
+
+    cur1.fast_executemany = True
+    cur1.executemany(sql_statement, df2.values.tolist())
+
+    #Storing rowcount
+
+    end_time = datetime.now()
+
+    End_dtTime=strftime("%Y-%m-%d %H:%M:%S", localtime())
+    logger.info('Start Time:'+Start_dtTime)
+    logger.info('End Time:'+End_dtTime)
+    logger.info('Elapsed Time: {}'.format(end_time - start_time))
+    logger.info('Records entered in the database: {}'.format(rowcount))
+
+    sql_conn.commit()
+    cur1.close()
+    sql_conn.close()
+    
+except Exception as e:
+    logger.critical(e, exc_info=True)
+    
+
+print('done')
