@@ -1,0 +1,73 @@
+print('Initializing...')
+
+import pyodbc
+import logging
+from datetime import datetime
+from time import time, strftime, localtime
+
+
+try:
+    logger=logging.getLogger(__name__)
+    logger.setLevel(logging.INFO)
+    
+    Start_dtTime=strftime("%Y-%m-%d %H:%M:%S", localtime())
+    start_time = datetime.now()
+# set log file name with formatter
+    
+    file_handler=logging.FileHandler("C:/Users/kkumar26/Desktop/2021/Python_log/Virtual_Finance_Dashboard.log", mode='w')
+    formatter=logging.Formatter('%(asctime)s : %(levelname)s : %(name)s : %(message)s')
+    file_handler.setFormatter(formatter)
+    
+# add file handler to logger
+    logger.addHandler(file_handler)
+    Source_DB_Conn= pyodbc.connect( driver="{SQL Server}", server="eterpt-prod",database="ETE_Reporting",user=";",password=";")
+    Dest_DB_Conn= pyodbc.connect( driver="{SQL Server}", server="eterpt-test",database="ETE_Reporting",user=";",password=";")
+    
+    SDB_Cur=Source_DB_Conn.cursor()
+    
+    logger.info('Connection Established....')
+    logger.info('ETLJob: Virtual_Financial_Dashboard')
+    
+    #SQL Query to collect last 30 days records
+    
+    SDB_CMD='''SELECT SC.[Service],SC.[SubService],SC.[DC],SC.[Network],SC.[L1Name] ,SC.[L2Name] , Convert(date,Getdate()) as Pulldate
+    ,Max(Round(SR.L2Memory*SC.[Measure],2)) [ConsumedMemory],Max(SR.[L2Memory]) as RawMemory,Max(SR.[L2Memory]*SR.[MemThres]) as UsableMemory 
+     FROM [ETE_Reporting].[cap].[SupplyComponent] SC 
+     Inner Join Cap.SupplyReference SR on SC.L1Name=SR.L1Name 
+     where SC.L2Name=SR.L2Name and SC.[Service] in ('ODI','UCI','ESX') and SC.[subservice]='General' and SC.[Component]='MEM_UTIL_95' 
+     and SC.[pulldate] Between Getdate()-30 and Getdate() 
+     Group by SC.[Service],SC.[SubService],SC.[DC],SC.[Network],SC.[L1Name] ,SC.[L2Name]
+     '''
+    
+    #res= SDB_Cur.execute(SDB_CMD)
+    SDB_Cur.execute(SDB_CMD)
+    Dest_DB_Cur=Dest_DB_Conn.cursor()
+    
+    Dest_DB_Cur.execute("Delete from ETE_Reporting.cap.uciVirtualDashboard Where Pulldate>getdate()-30 ")
+    
+    DST_CMD='''Insert Into ETE_Reporting.cap.uciVirtualDashboard(Service,SubService,DC,Network,L1Name,L2Name,Pulldate,ConsumedMemory,RawMemory,UsableMemory) 
+          Values(?,?,?,?,?,?,?,?,?,?)'''
+    count=0
+    for r in SDB_Cur.fetchall():
+        count=count+1
+    #for r in res:
+        Values=[r.Service,r.SubService,r.DC,r.Network,r.L1Name,r.L2Name,r.Pulldate,r.ConsumedMemory,r.RawMemory,r.UsableMemory]
+        Dest_DB_Cur.execute(DST_CMD,Values)
+    
+    end_time = datetime.now()
+    End_dtTime=strftime("%Y-%m-%d %H:%M:%S", localtime())
+    logger.info('Start Time:'+Start_dtTime)
+    logger.info('End Time:'+End_dtTime)
+    logger.info('Elapsed Time: {}'.format(end_time - start_time))
+    logger.info('Records entered in the database: {}'.format(count))
+    
+    SDB_Cur.commit()
+    SDB_Cur.close()
+    Dest_DB_Cur.commit()
+    Dest_DB_Cur.close()
+
+except Exception as e:
+    
+    logger.critical(e, exc_info=True)
+
+print('Done...')
